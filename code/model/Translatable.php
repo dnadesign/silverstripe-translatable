@@ -213,6 +213,13 @@ class Translatable extends DataExtension implements PermissionProvider {
 	private static $enforce_global_unique_urls = true;
 		
 	/**
+	 * @var boolean on dev/build, update any records that don't have a Locale 
+	 * set. Note: This will use a write and a publish, effectively modifying the 
+	 * records.
+	 */
+	private static $update_existing_records = true;
+
+	/*
 	 * Reset static configuration variables to their default values
 	 */
 	static function reset() {
@@ -681,50 +688,51 @@ class Translatable extends DataExtension implements PermissionProvider {
 			// Only add the code if no more restrictive code exists 
 			if(!$hasTranslationCode) Permission::grant($group->ID, 'TRANSLATE_ALL');
 		}
-		
-		// If the Translatable extension was added after the first records were already
-		// created in the database, make sure to update the Locale property if
-		// if wasn't set before
-		$idsWithoutLocale = DB::query(sprintf(
-			'SELECT "ID" FROM "%s" WHERE "Locale" IS NULL OR "Locale" = \'\'',
-			ClassInfo::baseDataClass($this->owner->class)
-		))->column();
-		if(!$idsWithoutLocale) return;
-		
-			if(class_exists('SiteTree') && $this->owner->class == 'SiteTree') {
-			foreach(array('Stage', 'Live') as $stage) {
+		if(Config::inst()->get('Translatable', 'update_existing_records')) {
+			// If the Translatable extension was added after the first records were already
+			// created in the database, make sure to update the Locale property if
+			// if wasn't set before
+			$idsWithoutLocale = DB::query(sprintf(
+				'SELECT "ID" FROM "%s" WHERE "Locale" IS NULL OR "Locale" = \'\'',
+				ClassInfo::baseDataClass($this->owner->class)
+			))->column();
+			if(!$idsWithoutLocale) return;
+
+				if(class_exists('SiteTree') && $this->owner->class == 'SiteTree') {
+				foreach(array('Stage', 'Live') as $stage) {
+					foreach($idsWithoutLocale as $id) {
+						$obj = Versioned::get_one_by_stage(
+							$this->owner->class,
+							$stage,
+							sprintf('"SiteTree"."ID" = %d', $id)
+						);
+						if(!$obj) continue;
+
+						$obj->Locale = Translatable::default_locale();
+						$obj->writeToStage($stage);
+						$obj->addTranslationGroup($obj->ID);
+						$obj->destroy();
+						unset($obj);
+					}
+				}
+			} else {
 				foreach($idsWithoutLocale as $id) {
-					$obj = Versioned::get_one_by_stage(
-						$this->owner->class, 
-						$stage, 
-						sprintf('"SiteTree"."ID" = %d', $id)
-					);
+					$obj = DataObject::get_by_id($this->owner->class, $id);
 					if(!$obj) continue;
 
 					$obj->Locale = Translatable::default_locale();
-					$obj->writeToStage($stage);
+					$obj->write();
 					$obj->addTranslationGroup($obj->ID);
 					$obj->destroy();
 					unset($obj);
 				}
 			}
-		} else {
-			foreach($idsWithoutLocale as $id) {
-				$obj = DataObject::get_by_id($this->owner->class, $id);
-				if(!$obj) continue;
-
-				$obj->Locale = Translatable::default_locale();
-				$obj->write();
-				$obj->addTranslationGroup($obj->ID);
-				$obj->destroy();
-				unset($obj);
-			}
+			DB::alteration_message(sprintf(
+				"Added default locale '%s' to table %s","changed",
+				Translatable::default_locale(),
+				$this->owner->class
+			));
 		}
-		DB::alteration_message(sprintf(
-			"Added default locale '%s' to table %s","changed",
-			Translatable::default_locale(),
-			$this->owner->class
-		));
 	}
 	
 	/**
